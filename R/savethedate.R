@@ -13,43 +13,71 @@ parse_dt <- function(x, ref_date = Sys.Date()) {
   parsed <- parsedate::parse_date(x)
   
   # Handle relative dates by shifting based on ref_date
-  # If ref_date is not today, we shift the 'parsed' results
-  # This works because parsedate uses Sys.time() as the anchor.
   today <- as.Date(Sys.time())
   if (ref_date != today) {
     diff <- as.numeric(ref_date - today)
-    # Only shift if the string contains relative terms
     is_relative <- grepl("(?i)yesterday|today|tomorrow|last|next|ago|hence|now", x)
     parsed[is_relative] <- parsed[is_relative] + (diff * 86400)
   }
   
-  # Extraction with regex for verification
+  # Month detection logic
+  month_names_vec <- c("january", "february", "march", "april", "may", "june", 
+                       "july", "august", "september", "october", "november", "december")
+  month_shorts_vec <- c("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+  
+  # Helper to find month in string
+  find_month <- function(s) {
+    if (is.na(s)) return(NA_integer_)
+    
+    # 1. Check exact names
+    for (i in 1:12) {
+      if (grepl(paste0("(?i)\\b", month_names_vec[i], "\\b"), s) || 
+          grepl(paste0("(?i)\\b", month_shorts_vec[i], "\\b"), s)) {
+        return(i)
+      }
+    }
+    
+    # 2. Check fuzzy names (max ~20% edits)
+    for (i in 1:12) {
+      if (length(agrep(month_names_vec[i], s, max.distance = 0.2, ignore.case = TRUE)) > 0) {
+        return(i)
+      }
+    }
+    
+    # 3. Check numeric date patterns (e.g. 10/02/2025)
+    # We trust parsedate if it looks like it found a numeric date
+    if (grepl("\\b\\d{1,2}[/-]\\d{1,2}[/-](\\d{2}|\\d{4})\\b", s) || 
+        grepl("\\b\\d{4}[/-]\\d{1,2}[/-]\\d{1,2}\\b", s)) {
+      return(as.integer(lubridate::month(parsedate::parse_date(s))))
+    }
+    
+    return(NA_integer_)
+  }
+  
+  detected_months <- sapply(x, find_month)
+  
   # Year: 4 digits starting with 19 or 20
   has_year <- grepl("\\b(19|20)\\d{2}\\b", x)
   
-  # Month: names
-  month_names <- "january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
-  has_month_name <- grepl(paste0("(?i)\\b(", month_names, ")\\b"), x, perl = TRUE)
-  
   # Time: AM/PM or HH:MM
   has_time <- grepl("(?i)(\\d{1,2}(:\\d{2})?\\s*([ap]m))|(\\d{1,2}:\\d{2}(:\\d{2})?)", x, perl = TRUE)
-  
-  # Day: numbers 1-31 (tricky if multiple numbers)
-  # But usually if parsedate works and we have a month, we have a day.
-  # If string is just "2026", parsedate gives 2026-01-01.
-  # We check if day/month was actually in the string.
   
   # Simple heuristic: if string has only 4 digits and it's a year, then no month/day
   just_year <- grepl("^\\s*\\d{4}\\s*$", x)
   
   res <- list(
     year = as.integer(lubridate::year(parsed)),
-    month = as.integer(lubridate::month(parsed)),
+    month = as.integer(detected_months),
     day = as.integer(lubridate::day(parsed)),
     hour = as.integer(lubridate::hour(parsed)),
     minute = as.integer(lubridate::minute(parsed)),
     second = as.integer(lubridate::second(parsed))
   )
+  
+  # Adjust for relative dates (overwrite the detected months which would be NA)
+  is_relative <- grepl("(?i)yesterday|today|tomorrow|last|next|ago|hence|now", x)
+  res$month[is_relative] <- as.integer(lubridate::month(parsed[is_relative]))
+  res$day[is_relative] <- as.integer(lubridate::day(parsed[is_relative]))
   
   # Apply corrections
   res$year[!has_year] <- NA
@@ -57,15 +85,12 @@ parse_dt <- function(x, ref_date = Sys.Date()) {
   res$minute[!has_time] <- NA
   res$second[!has_time] <- NA
   
+  # If month is NA and not relative, day should also be NA
+  res$day[is.na(res$month) & !is_relative] <- NA
+  
   # If it's just a year, set month/day to NA
   res$month[just_year] <- NA
   res$day[just_year] <- NA
-  
-  # If it's just a time (e.g., "9pm"), parsedate might have filled today's date
-  # Check if month name or numeric date pattern exists
-  has_date_part <- grepl("(?i)([a-z]{3,})|(\\d{1,2}[/-]\\d{1,2})|(\\d{4}[/-])", x, perl = TRUE) | has_year | has_month_name
-  res$month[!has_date_part] <- NA
-  res$day[!has_date_part] <- NA
   
   # Handle failures
   res$year[is.na(parsed)] <- NA
@@ -78,7 +103,6 @@ parse_dt <- function(x, ref_date = Sys.Date()) {
 
 #' @export
 print.fuzzy_dt <- function(x, ...) {
-  n <- length(x$year)
   y <- ifelse(is.na(x$year), "NA", sprintf("%04d", x$year))
   m <- ifelse(is.na(x$month), "NA", sprintf("%02d", x$month))
   d <- ifelse(is.na(x$day), "NA", sprintf("%02d", x$day))
