@@ -35,6 +35,7 @@ parse_dt <- function(x, ref_date = Sys.Date(), verbose = TRUE) {
   slots_list <- lapply(x, function(s) {
     if (is.na(s)) return(NULL)
     s_clean <- gsub("\\b\\d{1,2}:\\d{2}(:\\d{2})?(\\s*[ap]m)?\\b", " ", s, ignore.case = TRUE)
+    s_clean <- gsub("\\d+\\s*o'clock", " ", s_clean, ignore.case = TRUE)
     m <- gregexpr("\\b\\d{1,4}\\b", s_clean)
     res <- as.integer(regmatches(s_clean, m)[[1]])
     if (length(res) == 3) return(res) else return(NULL)
@@ -60,6 +61,8 @@ parse_dt <- function(x, ref_date = Sys.Date(), verbose = TRUE) {
   # --- STEP 2: PARSING ---
   month_names <- c("january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december")
   month_shorts <- c("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+  weekdays <- c("sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday")
+
   yy <- rep(NA_integer_, n); mm <- rep(NA_integer_, n); dd <- rep(NA_integer_, n)
   hh <- rep(NA_integer_, n); mi <- rep(NA_integer_, n); ss <- rep(NA_integer_, n)
 
@@ -70,7 +73,36 @@ parse_dt <- function(x, ref_date = Sys.Date(), verbose = TRUE) {
     
     if (grepl("(?i)\\b\\d{2}'?s\\b", s)) { stats$vagueness <- stats$vagueness + 1; next }
 
-    # 1. Custom Relative Phrasing (Priority)
+    # 1. Custom o'clock logic (High Priority)
+    if (grepl("(?i)(\\d+)\\s*o'clock", s)) {
+       m <- regexec("(\\d+)\\s*o'clock", s_low)
+       h_v <- as.integer(regmatches(s_low, m)[[1]][2])
+       if (grepl("morning", s_low)) { if(h_v == 12) h_v <- 0 }
+       else if (grepl("afternoon|evening|night", s_low)) { if(h_v < 12) h_v <- h_v + 12 }
+       hh[i] <- h_v; mi[i] <- 0; ss[i] <- 0
+       yy[i] <- as.integer(format(ref_date, "%Y")); mm[i] <- as.integer(format(ref_date, "%m")); dd[i] <- as.integer(format(ref_date, "%d"))
+       stats$relative <- stats$relative + 1; next
+    }
+
+    # 2. Weekday-Relative Phrasing: "[n] [weekday]s from now/ago"
+    if (grepl("(?i)(one|two|three|four|five|six|seven|eight|nine|ten|\\d+)?\\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday)s?\\s+(ago|from\\s+now)", s)) {
+       words <- c("one"=1, "two"=2, "three"=3, "four"=4, "five"=5, "six"=6, "seven"=7, "eight"=8, "nine"=9, "ten"=10)
+       m <- regexec("(?i)(one|two|three|four|five|six|seven|eight|nine|ten|\\d+)?\\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday)s?\\s+(ago|from\\s+now)", s_low)
+       parts <- regmatches(s_low, m)[[1]]
+       n_v <- if (parts[2] == "") 1 else if (parts[2] %in% names(words)) words[parts[2]] else as.numeric(parts[2])
+       target_wd <- match(parts[3], weekdays); curr_wd <- as.integer(format(ref_date, "%w")) + 1
+       dir <- if (grepl("from", parts[4])) 1 else -1
+       
+       diff <- target_wd - curr_wd
+       if (dir == 1 && diff <= 0) diff <- diff + 7
+       if (dir == -1 && diff >= 0) diff <- diff - 7
+       
+       dr <- ref_date + diff + (dir * (n_v - 1) * 7)
+       yy[i] <- as.integer(format(dr, "%Y")); mm[i] <- as.integer(format(dr, "%m")); dd[i] <- as.integer(format(dr, "%d"))
+       stats$relative <- stats$relative + 1; next
+    }
+
+    # 3. Standard Relative Phrases
     if (grepl("(?i)(one|two|three|four|five|six|seven|eight|nine|ten|\\d+)\\s+(day|week|month|year)s?\\s+(ago|from\\s+now)", s)) {
        words <- c("one"=1, "two"=2, "three"=3, "four"=4, "five"=5, "six"=6, "seven"=7, "eight"=8, "nine"=9, "ten"=10)
        m <- regexec("(?i)(one|two|three|four|five|six|seven|eight|nine|ten|\\d+)\\s+(day|week|month|year)s?\\s+(ago|from\\s+now)", s)
@@ -83,13 +115,13 @@ parse_dt <- function(x, ref_date = Sys.Date(), verbose = TRUE) {
        next
     }
 
-    # 2. Military/Time
+    # 4. Military/Time
     if (grepl("^\\s*\\d{4}\\s*$", s) && !grepl("^\\s*(19|20)\\d{2}\\s*$", s)) {
        hv <- as.integer(substr(s, 1, 2)); mv <- as.integer(substr(s, 3, 4))
        if (hv < 24 && mv < 60) { hh[i] <- hv; mi[i] <- mv; ss[i] <- 0L; yy[i] <- curr_y; mm[i] <- as.integer(format(ref_date, "%m")); dd[i] <- as.integer(format(ref_date, "%d")); next }
     }
 
-    # 3. Relative Key terms
+    # 5. Relative Key terms
     if (s_low %in% c("today", "tomorrow", "yesterday", "noon", "midnight")) {
       stats$relative <- stats$relative + 1
       if (s_low == "today") { yy[i] <- curr_y; mm[i] <- as.integer(format(ref_date, "%m")); dd[i] <- as.integer(format(ref_date, "%d")); next }
@@ -99,7 +131,7 @@ parse_dt <- function(x, ref_date = Sys.Date(), verbose = TRUE) {
       if (s_low == "midnight") { yy[i] <- curr_y; mm[i] <- as.integer(format(ref_date, "%m")); dd[i] <- as.integer(format(ref_date, "%d")); hh[i] <- 0; mi[i] <- 0; next }
     }
 
-    # 4. Contextual resolution
+    # 6. Contextual resolution
     if (!is.null(consensus) && !is.null(slots_list[[i]])) {
        m <- mappings[[consensus]]; slots <- slots_list[[i]]
        y_v <- slots[m[1]]; if (y_v < 100) y_v <- ifelse(y_v > 50, 1900 + y_v, 2000 + y_v)
@@ -111,7 +143,7 @@ parse_dt <- function(x, ref_date = Sys.Date(), verbose = TRUE) {
        next
     }
 
-    # 5. Fallback Standard
+    # 7. Fallback Standard
     if (is.na(yy[i])) {
       p <- parsedate::parse_date(gsub("\\.", "/", s))
       if (!is.na(p)) {
@@ -141,7 +173,7 @@ parse_dt <- function(x, ref_date = Sys.Date(), verbose = TRUE) {
   
   if (verbose) {
     if (!is.null(consensus)) message("Note: Column-wide format resolved as '", consensus, "'.")
-    if (stats$relative > 0) message("Note: ", stats$relative, " relative dates anchored to ", ref_date, ".")
+    if (stats$relative > 0) message("Note: ", stats$relative, " relative dates/times anchored to ", ref_date, ".")
   }
   res <- data.frame(year = yy, month = mm, day = dd, hour = hh, minute = mi, second = ss)
   class(res) <- c("fuzzy_dt", "data.frame")
