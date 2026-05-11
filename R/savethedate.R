@@ -8,18 +8,26 @@ parse_dt <- function(x, ref_date = Sys.Date()) {
   x <- as.character(x)
   n <- length(x)
   
-  # Robust ref_date resolution (avoiding recursion)
+  # Robust ref_date resolution
   if (is.character(ref_date)) {
-    tmp_p <- parsedate::parse_date(ref_date)
-    if (is.na(tmp_p)) {
-      # Fallback for things like '2026' or '1st May 2026' if parsedate fails
-      if (grepl("^\\d{4}$", ref_date)) {
-        ref_date <- as.Date(paste0(ref_date, "-01-01"))
-      } else {
-        ref_date <- Sys.Date()
-      }
+    ref_s <- tolower(trimws(ref_date))
+    if (ref_s == "today") {
+      ref_date <- Sys.Date()
+    } else if (ref_s == "yesterday") {
+      ref_date <- Sys.Date() - 1
+    } else if (ref_s == "tomorrow") {
+      ref_date <- Sys.Date() + 1
     } else {
-      ref_date <- as.Date(tmp_p)
+      tmp_p <- parsedate::parse_date(ref_date)
+      if (is.na(tmp_p)) {
+        if (grepl("^\\d{4}$", ref_date)) {
+          ref_date <- as.Date(paste0(ref_date, "-01-01"))
+        } else {
+          ref_date <- Sys.Date()
+        }
+      } else {
+        ref_date <- as.Date(tmp_p)
+      }
     }
   }
   ref_date <- as.Date(ref_date)
@@ -81,7 +89,6 @@ parse_dt <- function(x, ref_date = Sys.Date()) {
   
   # Main Loop
   results_list <- lapply(x, function(s) {
-    # 1. Try Natural Language
     nat <- parse_natural(s, ref_date)
     if (!is.na(nat)) {
       return(list(
@@ -93,13 +100,10 @@ parse_dt <- function(x, ref_date = Sys.Date()) {
       ))
     }
     
-    # 2. Try Standard Parsing
     p <- parsedate::parse_date(s)
     if (is.na(p)) return(list(year=NA_integer_, month=NA_integer_, day=NA_integer_, hour=NA_integer_, minute=NA_integer_, second=NA_integer_, is_rel=FALSE))
     
-    # Verification
     m_detected <- find_month(s)
-    # Check for numeric date formats if no month name found
     if (is.na(m_detected)) {
       if (grepl("\\b\\d{1,2}[/-]\\d{1,2}[/-](\\d{2}|\\d{4})\\b", s) || 
           grepl("\\b\\d{4}[/-]\\d{1,2}[/-]\\d{1,2}\\b", s)) {
@@ -151,8 +155,14 @@ print.fuzzy_dt <- function(x, ...) {
 #' @export
 as.POSIXct.fuzzy_dt <- function(x, tz = "UTC", ref_date = Sys.Date(), ...) {
   if (is.character(ref_date)) {
-    tmp_p <- parsedate::parse_date(ref_date)
-    ref_date <- if (is.na(tmp_p)) Sys.Date() else as.Date(tmp_p)
+    ref_s <- tolower(trimws(ref_date))
+    if (ref_s == "today") ref_date <- Sys.Date()
+    else if (ref_s == "yesterday") ref_date <- Sys.Date() - 1
+    else if (ref_s == "tomorrow") ref_date <- Sys.Date() + 1
+    else {
+      tmp_p <- parsedate::parse_date(ref_date)
+      ref_date <- if (is.na(tmp_p)) Sys.Date() else as.Date(tmp_p)
+    }
   }
   curr <- as.POSIXlt(ref_date)
   yy <- ifelse(is.na(x$year), curr$year + 1900, x$year)
