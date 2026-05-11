@@ -68,4 +68,12 @@ test_that("Arithmetic and difftime work", {
   dt2 <- parse_dt("2025-01-02")
   diff <- dt2 - dt1
   expect_equal(as.numeric(diff, units = "days"), 1)
+  
+  # Regression tests for timezone-related shifts
+  t1 <- parse_dt("today")
+  t2 <- parse_dt("today", ref_date = "yesterday")
+  expect_equal(as.numeric(difftime(t1, t2), units = "days"), 1)
+  
+  t3 <- parse_dt("yesterday")
+  expect_equal(as.numeric(difftime(t1, t3), units = "days"), 1)
 })
