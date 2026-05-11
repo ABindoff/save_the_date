@@ -1,4 +1,4 @@
-Package: save_the_date
+Package: savethedate
 Title: High-Performance Fuzzy Date-Time Parsing
 Version: 0.0.0.9000
 Authors@R: 
