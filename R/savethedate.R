@@ -8,19 +8,28 @@ parse_dt <- function(x, ref_date = Sys.Date()) {
   x <- as.character(x)
   n <- length(x)
   
-  # Resolve ref_date
+  # Robust ref_date resolution (avoiding recursion)
   if (is.character(ref_date)) {
-    ref_resolved <- parse_dt(ref_date, ref_date = Sys.Date())
-    ref_date <- as.Date(as.POSIXct(ref_resolved))
+    tmp_p <- parsedate::parse_date(ref_date)
+    if (is.na(tmp_p)) {
+      # Fallback for things like '2026' or '1st May 2026' if parsedate fails
+      if (grepl("^\\d{4}$", ref_date)) {
+        ref_date <- as.Date(paste0(ref_date, "-01-01"))
+      } else {
+        ref_date <- Sys.Date()
+      }
+    } else {
+      ref_date <- as.Date(tmp_p)
+    }
   }
   ref_date <- as.Date(ref_date)
   
-  # Core Parsing logic
-  # 1. Month detection (Fuzzy + Exact)
+  # Core Helpers
   month_names_vec <- c("january", "february", "march", "april", "may", "june", 
                        "july", "august", "september", "october", "november", "december")
   month_shorts_vec <- c("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
-  
+  weekdays_vec <- c("sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday")
+
   find_month <- function(s) {
     if (is.na(s)) return(NA_integer_)
     for (i in 1:12) {
@@ -30,16 +39,9 @@ parse_dt <- function(x, ref_date = Sys.Date()) {
     for (i in 1:12) {
       if (length(agrep(month_names_vec[i], s, max.distance = 0.2, ignore.case = TRUE)) > 0) return(i)
     }
-    # Check numeric formats
-    if (grepl("\\b\\d{1,2}[/-]\\d{1,2}[/-](\\d{2}|\\d{4})\\b", s) || 
-        grepl("\\b\\d{4}[/-]\\d{1,2}[/-]\\d{1,2}\\b", s)) {
-      tmp <- parsedate::parse_date(s)
-      if (!is.na(tmp)) return(as.integer(lubridate::month(tmp)))
-    }
     return(NA_integer_)
   }
-  
-  # 2. Natural Language Parsing
+
   parse_natural <- function(s, ref) {
     s <- tolower(trimws(s))
     if (s == "today") return(ref)
@@ -47,11 +49,10 @@ parse_dt <- function(x, ref_date = Sys.Date()) {
     if (s == "yesterday") return(ref - 1)
     
     # Next/Last Weekday
-    weekdays <- c("sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday")
     if (grepl("^(next|last)\\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)$", s)) {
       parts <- strsplit(s, "\\s+")[[1]]
       dir <- if (parts[1] == "next") 1 else -1
-      wday_target <- which(weekdays == parts[2]) - 1 # 0-indexed
+      wday_target <- which(weekdays_vec == parts[2]) - 1 
       wday_ref <- as.POSIXlt(ref)$wday
       
       diff <- wday_target - wday_ref
@@ -66,29 +67,21 @@ parse_dt <- function(x, ref_date = Sys.Date()) {
       n_val <- as.numeric(parts[1])
       unit <- parts[2]
       dir <- if (parts[3] == "ago") -1 else 1
-      
       if (grepl("day", unit)) return(ref + (n_val * dir))
       if (grepl("week", unit)) return(ref + (n_val * 7 * dir))
-      # Months/Years are approximate in days here for simplicity or we use POSIXlt
       lt <- as.POSIXlt(ref)
-      if (grepl("month", unit)) {
-        lt$mon <- lt$mon + (n_val * dir)
-        return(as.Date(lt))
-      }
-      if (grepl("year", unit)) {
-        lt$year <- lt$year + (n_val * dir)
-        return(as.Date(lt))
-      }
+      if (grepl("month", unit)) { lt$mon <- lt$mon + (n_val * dir); return(as.Date(lt)) }
+      if (grepl("year", unit)) { lt$year <- lt$year + (n_val * dir); return(as.Date(lt)) }
     }
     
     if (s == "next week") return(ref + 7)
     if (s == "last week") return(ref - 7)
-    
     return(as.Date(NA))
   }
   
-  # Process inputs
+  # Main Loop
   results_list <- lapply(x, function(s) {
+    # 1. Try Natural Language
     nat <- parse_natural(s, ref_date)
     if (!is.na(nat)) {
       return(list(
@@ -100,23 +93,36 @@ parse_dt <- function(x, ref_date = Sys.Date()) {
       ))
     }
     
+    # 2. Try Standard Parsing
     p <- parsedate::parse_date(s)
-    m <- find_month(s)
-    y <- if (grepl("\\b(19|20)\\d{2}\\b", s)) as.integer(lubridate::year(p)) else NA_integer_
-    h <- if (grepl("(?i)(\\d{1,2}(:\\d{2})?\\s*([ap]m))|(\\d{1,2}:\\d{2})", s)) as.integer(lubridate::hour(p)) else NA_integer_
-    mi <- if (!is.na(h)) as.integer(lubridate::minute(p)) else NA_integer_
-    se <- if (!is.na(h)) as.integer(lubridate::second(p)) else NA_integer_
+    if (is.na(p)) return(list(year=NA_integer_, month=NA_integer_, day=NA_integer_, hour=NA_integer_, minute=NA_integer_, second=NA_integer_, is_rel=FALSE))
+    
+    # Verification
+    m_detected <- find_month(s)
+    # Check for numeric date formats if no month name found
+    if (is.na(m_detected)) {
+      if (grepl("\\b\\d{1,2}[/-]\\d{1,2}[/-](\\d{2}|\\d{4})\\b", s) || 
+          grepl("\\b\\d{4}[/-]\\d{1,2}[/-]\\d{1,2}\\b", s)) {
+          m_detected <- as.integer(lubridate::month(p))
+      }
+    }
+    
+    y_detected <- if (grepl("\\b(19|20)\\d{2}\\b", s)) as.integer(lubridate::year(p)) else NA_integer_
+    
+    h_regex <- "(?i)(\\d{1,2}(:\\d{2})?\\s*([ap]m))|(\\d{1,2}:\\d{2})"
+    has_time <- grepl(h_regex, s, perl = TRUE)
     
     list(
-      year = y,
-      month = m,
-      day = if (!is.na(m)) as.integer(lubridate::day(p)) else NA_integer_,
-      hour = h, minute = mi, second = se,
+      year = y_detected,
+      month = m_detected,
+      day = if (!is.na(m_detected)) as.integer(lubridate::day(p)) else NA_integer_,
+      hour = if (has_time) as.integer(lubridate::hour(p)) else NA_integer_,
+      minute = if (has_time) as.integer(lubridate::minute(p)) else NA_integer_,
+      second = if (has_time) as.integer(lubridate::second(p)) else NA_integer_,
       is_rel = FALSE
     )
   })
   
-  # Combine into fuzzy_dt
   res <- list(
     year = sapply(results_list, `[[`, "year"),
     month = sapply(results_list, `[[`, "month"),
@@ -138,7 +144,6 @@ print.fuzzy_dt <- function(x, ...) {
   h <- ifelse(is.na(x$hour), "NA", sprintf("%02d", x$hour))
   mi <- ifelse(is.na(x$minute), "NA", sprintf("%02d", x$minute))
   s <- ifelse(is.na(x$second), "NA", sprintf("%02d", x$second))
-  
   out <- paste0(y, "-", m, "-", d, " ", h, ":", mi, ":", s)
   print(out, ...)
 }
@@ -146,8 +151,8 @@ print.fuzzy_dt <- function(x, ...) {
 #' @export
 as.POSIXct.fuzzy_dt <- function(x, tz = "UTC", ref_date = Sys.Date(), ...) {
   if (is.character(ref_date)) {
-    ref_resolved <- parse_dt(ref_date, ref_date = Sys.Date())
-    ref_date <- as.Date(as.POSIXct(ref_resolved))
+    tmp_p <- parsedate::parse_date(ref_date)
+    ref_date <- if (is.na(tmp_p)) Sys.Date() else as.Date(tmp_p)
   }
   curr <- as.POSIXlt(ref_date)
   yy <- ifelse(is.na(x$year), curr$year + 1900, x$year)
