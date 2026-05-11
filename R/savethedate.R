@@ -7,95 +7,124 @@
 parse_dt <- function(x, ref_date = Sys.Date()) {
   x <- as.character(x)
   n <- length(x)
+  
+  # Resolve ref_date
+  if (is.character(ref_date)) {
+    ref_resolved <- parse_dt(ref_date, ref_date = Sys.Date())
+    ref_date <- as.Date(as.POSIXct(ref_resolved))
+  }
   ref_date <- as.Date(ref_date)
   
-  # Initial parse with parsedate
-  parsed <- parsedate::parse_date(x)
-  
-  # Handle relative dates by shifting based on ref_date
-  today <- as.Date(Sys.time())
-  if (ref_date != today) {
-    diff <- as.numeric(ref_date - today)
-    is_relative <- grepl("(?i)yesterday|today|tomorrow|last|next|ago|hence|now", x)
-    parsed[is_relative] <- parsed[is_relative] + (diff * 86400)
-  }
-  
-  # Month detection logic
+  # Core Parsing logic
+  # 1. Month detection (Fuzzy + Exact)
   month_names_vec <- c("january", "february", "march", "april", "may", "june", 
                        "july", "august", "september", "october", "november", "december")
   month_shorts_vec <- c("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
   
-  # Helper to find month in string
   find_month <- function(s) {
     if (is.na(s)) return(NA_integer_)
-    
-    # 1. Check exact names
     for (i in 1:12) {
       if (grepl(paste0("(?i)\\b", month_names_vec[i], "\\b"), s) || 
-          grepl(paste0("(?i)\\b", month_shorts_vec[i], "\\b"), s)) {
-        return(i)
-      }
+          grepl(paste0("(?i)\\b", month_shorts_vec[i], "\\b"), s)) return(i)
     }
-    
-    # 2. Check fuzzy names (max ~20% edits)
     for (i in 1:12) {
-      if (length(agrep(month_names_vec[i], s, max.distance = 0.2, ignore.case = TRUE)) > 0) {
-        return(i)
-      }
+      if (length(agrep(month_names_vec[i], s, max.distance = 0.2, ignore.case = TRUE)) > 0) return(i)
     }
-    
-    # 3. Check numeric date patterns (e.g. 10/02/2025)
-    # We trust parsedate if it looks like it found a numeric date
+    # Check numeric formats
     if (grepl("\\b\\d{1,2}[/-]\\d{1,2}[/-](\\d{2}|\\d{4})\\b", s) || 
         grepl("\\b\\d{4}[/-]\\d{1,2}[/-]\\d{1,2}\\b", s)) {
-      return(as.integer(lubridate::month(parsedate::parse_date(s))))
+      tmp <- parsedate::parse_date(s)
+      if (!is.na(tmp)) return(as.integer(lubridate::month(tmp)))
     }
-    
     return(NA_integer_)
   }
   
-  detected_months <- sapply(x, find_month)
+  # 2. Natural Language Parsing
+  parse_natural <- function(s, ref) {
+    s <- tolower(trimws(s))
+    if (s == "today") return(ref)
+    if (s == "tomorrow") return(ref + 1)
+    if (s == "yesterday") return(ref - 1)
+    
+    # Next/Last Weekday
+    weekdays <- c("sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday")
+    if (grepl("^(next|last)\\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)$", s)) {
+      parts <- strsplit(s, "\\s+")[[1]]
+      dir <- if (parts[1] == "next") 1 else -1
+      wday_target <- which(weekdays == parts[2]) - 1 # 0-indexed
+      wday_ref <- as.POSIXlt(ref)$wday
+      
+      diff <- wday_target - wday_ref
+      if (dir == 1 && diff <= 0) diff <- diff + 7
+      if (dir == -1 && diff >= 0) diff <- diff - 7
+      return(ref + diff)
+    }
+    
+    # [n] units ago/hence
+    if (grepl("^(\\d+)\\s+(day|week|month|year)s?\\s+(ago|hence)$", s)) {
+      parts <- strsplit(s, "\\s+")[[1]]
+      n_val <- as.numeric(parts[1])
+      unit <- parts[2]
+      dir <- if (parts[3] == "ago") -1 else 1
+      
+      if (grepl("day", unit)) return(ref + (n_val * dir))
+      if (grepl("week", unit)) return(ref + (n_val * 7 * dir))
+      # Months/Years are approximate in days here for simplicity or we use POSIXlt
+      lt <- as.POSIXlt(ref)
+      if (grepl("month", unit)) {
+        lt$mon <- lt$mon + (n_val * dir)
+        return(as.Date(lt))
+      }
+      if (grepl("year", unit)) {
+        lt$year <- lt$year + (n_val * dir)
+        return(as.Date(lt))
+      }
+    }
+    
+    if (s == "next week") return(ref + 7)
+    if (s == "last week") return(ref - 7)
+    
+    return(as.Date(NA))
+  }
   
-  # Year: 4 digits starting with 19 or 20
-  has_year <- grepl("\\b(19|20)\\d{2}\\b", x)
+  # Process inputs
+  results_list <- lapply(x, function(s) {
+    nat <- parse_natural(s, ref_date)
+    if (!is.na(nat)) {
+      return(list(
+        year = as.integer(lubridate::year(nat)),
+        month = as.integer(lubridate::month(nat)),
+        day = as.integer(lubridate::day(nat)),
+        hour = NA_integer_, minute = NA_integer_, second = NA_integer_,
+        is_rel = TRUE
+      ))
+    }
+    
+    p <- parsedate::parse_date(s)
+    m <- find_month(s)
+    y <- if (grepl("\\b(19|20)\\d{2}\\b", s)) as.integer(lubridate::year(p)) else NA_integer_
+    h <- if (grepl("(?i)(\\d{1,2}(:\\d{2})?\\s*([ap]m))|(\\d{1,2}:\\d{2})", s)) as.integer(lubridate::hour(p)) else NA_integer_
+    mi <- if (!is.na(h)) as.integer(lubridate::minute(p)) else NA_integer_
+    se <- if (!is.na(h)) as.integer(lubridate::second(p)) else NA_integer_
+    
+    list(
+      year = y,
+      month = m,
+      day = if (!is.na(m)) as.integer(lubridate::day(p)) else NA_integer_,
+      hour = h, minute = mi, second = se,
+      is_rel = FALSE
+    )
+  })
   
-  # Time: AM/PM or HH:MM
-  has_time <- grepl("(?i)(\\d{1,2}(:\\d{2})?\\s*([ap]m))|(\\d{1,2}:\\d{2}(:\\d{2})?)", x, perl = TRUE)
-  
-  # Simple heuristic: if string has only 4 digits and it's a year, then no month/day
-  just_year <- grepl("^\\s*\\d{4}\\s*$", x)
-  
+  # Combine into fuzzy_dt
   res <- list(
-    year = as.integer(lubridate::year(parsed)),
-    month = as.integer(detected_months),
-    day = as.integer(lubridate::day(parsed)),
-    hour = as.integer(lubridate::hour(parsed)),
-    minute = as.integer(lubridate::minute(parsed)),
-    second = as.integer(lubridate::second(parsed))
+    year = sapply(results_list, `[[`, "year"),
+    month = sapply(results_list, `[[`, "month"),
+    day = sapply(results_list, `[[`, "day"),
+    hour = sapply(results_list, `[[`, "hour"),
+    minute = sapply(results_list, `[[`, "minute"),
+    second = sapply(results_list, `[[`, "second")
   )
-  
-  # Adjust for relative dates (overwrite the detected months which would be NA)
-  is_relative <- grepl("(?i)yesterday|today|tomorrow|last|next|ago|hence|now", x)
-  res$month[is_relative] <- as.integer(lubridate::month(parsed[is_relative]))
-  res$day[is_relative] <- as.integer(lubridate::day(parsed[is_relative]))
-  
-  # Apply corrections
-  res$year[!has_year] <- NA
-  res$hour[!has_time] <- NA
-  res$minute[!has_time] <- NA
-  res$second[!has_time] <- NA
-  
-  # If month is NA and not relative, day should also be NA
-  res$day[is.na(res$month) & !is_relative] <- NA
-  
-  # If it's just a year, set month/day to NA
-  res$month[just_year] <- NA
-  res$day[just_year] <- NA
-  
-  # Handle failures
-  res$year[is.na(parsed)] <- NA
-  res$month[is.na(parsed)] <- NA
-  res$day[is.na(parsed)] <- NA
   
   class(res) <- c("fuzzy_dt", "list")
   res
@@ -116,6 +145,10 @@ print.fuzzy_dt <- function(x, ...) {
 
 #' @export
 as.POSIXct.fuzzy_dt <- function(x, tz = "UTC", ref_date = Sys.Date(), ...) {
+  if (is.character(ref_date)) {
+    ref_resolved <- parse_dt(ref_date, ref_date = Sys.Date())
+    ref_date <- as.Date(as.POSIXct(ref_resolved))
+  }
   curr <- as.POSIXlt(ref_date)
   yy <- ifelse(is.na(x$year), curr$year + 1900, x$year)
   mm <- ifelse(is.na(x$month), curr$mon + 1, x$month)
