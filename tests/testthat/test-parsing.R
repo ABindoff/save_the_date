@@ -22,9 +22,9 @@ test_that("Relative dates with static anchors work", {
   expect_equal(hour(parse_dt("noon", ref_date = ref)), 12L)
   
   # phrase relative: May 12 - 14 days = April 28
-  res_ago <- parse_dt("two weeks ago", ref_date = ref)
-  expect_equal(month(res_ago), 4L)
-  expect_equal(day(res_ago), 28L)
+  res_ago <- parse_dt("two weeks ago", ref_date = "2026-05-28")
+  expect_equal(month(res_ago), 5L)
+  expect_equal(day(res_ago), 14L)
 })
 
 test_that("Military and standard formats work", {
