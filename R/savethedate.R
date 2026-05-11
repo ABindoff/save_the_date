@@ -31,7 +31,6 @@ parse_dt <- function(x, ref_date = Sys.Date(), verbose = TRUE) {
   # --- STEP 1: SLOTS & CONTEXT ---
   slots_list <- lapply(x, function(s) {
     if (is.na(s)) return(NULL)
-    # Strip time part for slot analysis to avoid time-year confusion
     s_clean <- gsub("\\b\\d{1,2}:\\d{2}(:\\d{2})?(\\s*[ap]m)?\\b", " ", s, ignore.case = TRUE)
     m <- gregexpr("\\b\\d{1,4}\\b", s_clean)
     res <- as.integer(regmatches(s_clean, m)[[1]])
@@ -70,7 +69,7 @@ parse_dt <- function(x, ref_date = Sys.Date(), verbose = TRUE) {
     
     if (grepl("(?i)\\b\\d{2}'?s\\b", s)) { stats$vagueness <- stats$vagueness + 1; next }
 
-    # Military/Time (Priority)
+    # Military/Time
     if (grepl("^\\s*\\d{4}\\s*$", s) && !grepl("^\\s*(19|20)\\d{2}\\s*$", s)) {
        hv <- as.integer(substr(s, 1, 2)); mv <- as.integer(substr(s, 3, 4))
        if (hv < 24 && mv < 60) { 
@@ -88,11 +87,12 @@ parse_dt <- function(x, ref_date = Sys.Date(), verbose = TRUE) {
       if (s_low == "midnight") { yy[i] <- curr_y; mm[i] <- as.integer(lubridate::month(ref_date)); dd[i] <- as.integer(lubridate::day(ref_date)); hh[i] <- 0; mi[i] <- 0; next }
     }
 
-    # Contextual resolution
+    # Contextual
     if (is.na(yy[i]) && !is.null(consensus) && !is.null(slots_list[[i]])) {
        m <- mappings[[consensus]]; slots <- slots_list[[i]]
        y_v <- slots[m[1]]; if (y_v < 100) y_v <- ifelse(y_v > 50, 1900 + y_v, 2000 + y_v)
        yy[i] <- y_v; mm[i] <- slots[m[2]]; dd[i] <- slots[m[3]]
+       stats$contextual <- stats$contextual + 1
        pt <- parsedate::parse_date(s); if (!is.na(pt) && grepl("(?i)(\\d{1,2}(:\\d{2})?\\s*([ap]m))|(\\d{1,2}:\\d{2})", s)) {
          hh[i] <- as.integer(lubridate::hour(pt)); mi[i] <- as.integer(lubridate::minute(pt)); ss[i] <- as.integer(lubridate::second(pt))
        }
@@ -108,9 +108,9 @@ parse_dt <- function(x, ref_date = Sys.Date(), verbose = TRUE) {
         else if (length(agrep(month_names[j], s, max.distance = 0.2, ignore.case = TRUE)) > 0) { m_idx <- j; stats$fuzzy_month <- stats$fuzzy_month + 1; break }
       }
       if (is.na(m_idx)) m_idx <- as.integer(lubridate::month(p))
-      mm[i] <- m_idx; dd[i] <- as.integer(lubridate::day(p))
+      m_val <- m_idx; d_val <- as.integer(lubridate::day(p))
       
-      # Year Imputation with Time Guard
+      # Proximity-Based Year Imputation
       s_notime <- gsub("\\b\\d{1,2}:\\d{2}(:\\d{2})?(\\s*[ap]m)?\\b", " ", s, ignore.case = TRUE)
       y_str <- regmatches(s_notime, gregexpr("\\b(19|20)?\\d{2}\\b", s_notime))[[1]]
       if (length(y_str) > 0) {
@@ -118,8 +118,17 @@ parse_dt <- function(x, ref_date = Sys.Date(), verbose = TRUE) {
         if (y_val < 100) y_val <- ifelse(y_val > 50, 1900 + y_val, 2000 + y_val)
         yy[i] <- y_val
       } else {
-        yy[i] <- curr_y
+        # Intelligent Year Resolution (Closest to ref_date)
+        # Candidates: Last Year, This Year, Next Year
+        cands <- c(curr_y - 1, curr_y, curr_y + 1)
+        # Try to make valid dates
+        dates <- lapply(cands, function(y) {
+           tryCatch(as.Date(paste(y, m_val, d_val, sep="-")), error = function(e) as.Date(NA))
+        })
+        diffs <- sapply(dates, function(d) if (is.na(d)) Inf else abs(as.numeric(difftime(d, ref_date, units="days"))))
+        yy[i] <- cands[which.min(diffs)]
       }
+      mm[i] <- m_val; dd[i] <- d_val
       
       if (grepl("(?i)(\\d{1,2}(:\\d{2})?\\s*([ap]m))|(\\d{1,2}:\\d{2})|o'clock", s)) {
         hh[i] <- as.integer(lubridate::hour(p)); mi[i] <- as.integer(lubridate::minute(p)); ss[i] <- as.integer(lubridate::second(p))
