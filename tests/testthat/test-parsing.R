@@ -1,7 +1,5 @@
 
 test_that("Contextual parsing resolves ambiguous dates", {
-  # 02/01/26 is ambiguous (Feb 1 vs Jan 2)
-  # 13/10/26 implies DMY (13th Oct)
   x <- c("02/01/26", "13/10/26")
   res <- parse_dt(x)
   expect_equal(month(res)[1], 1L)
@@ -16,16 +14,17 @@ test_that("Fuzzy month matching works", {
 })
 
 test_that("Relative dates with static anchors work", {
-  ref <- "2026-05-12" # A Tuesday
+  # Force ref to be a clean date object
+  ref <- as.Date("2026-05-12") 
   
   expect_equal(day(parse_dt("yesterday", ref_date = ref)), 11L)
   expect_equal(day(parse_dt("tomorrow", ref_date = ref)), 13L)
   expect_equal(hour(parse_dt("noon", ref_date = ref)), 12L)
   
-  # phrase relative
+  # phrase relative: May 12 - 14 days = April 28
   res_ago <- parse_dt("two weeks ago", ref_date = ref)
-  expect_equal(day(res_ago), 28L)
   expect_equal(month(res_ago), 4L)
+  expect_equal(day(res_ago), 28L)
 })
 
 test_that("Military and standard formats work", {

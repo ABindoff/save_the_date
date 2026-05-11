@@ -11,14 +11,17 @@ parse_dt <- function(x, ref_date = Sys.Date(), verbose = TRUE) {
   
   stats <- list(ranges = 0, relative = 0, contextual = 0, fuzzy_month = 0, vagueness = 0)
   
+  # Absolute Ref Date resolution (TimeZone-Locked)
   if (is.character(ref_date)) {
     ref_s <- tolower(trimws(ref_date))
     if (ref_s == "today") ref_date <- Sys.Date()
     else if (ref_s == "yesterday") ref_date <- Sys.Date() - 1
     else if (ref_s == "tomorrow") ref_date <- Sys.Date() + 1
     else {
+      # Use raw ISO format to prevent UTC-shifts
       if (grepl("^\\d{4}[-./]\\d{1,2}[-./]\\d{1,2}$", ref_s)) {
-        ref_date <- as.Date(gsub("[./]", "-", ref_s))
+        bits <- as.integer(strsplit(gsub("[./]", "-", ref_s), "-")[[1]])
+        ref_date <- as.Date(ISOdate(bits[1], bits[2], bits[3], tz=""))
       } else {
         tmp_p <- parsedate::parse_date(ref_date)
         ref_date <- if (is.na(tmp_p)) Sys.Date() else as.Date(tmp_p)
@@ -26,7 +29,7 @@ parse_dt <- function(x, ref_date = Sys.Date(), verbose = TRUE) {
     }
   }
   ref_date <- as.Date(ref_date)
-  curr_y <- as.integer(lubridate::year(ref_date))
+  curr_y <- as.integer(format(ref_date, "%Y"))
 
   # --- STEP 1: SLOTS & CONTEXT ---
   slots_list <- lapply(x, function(s) {
@@ -73,18 +76,18 @@ parse_dt <- function(x, ref_date = Sys.Date(), verbose = TRUE) {
     if (grepl("^\\s*\\d{4}\\s*$", s) && !grepl("^\\s*(19|20)\\d{2}\\s*$", s)) {
        hv <- as.integer(substr(s, 1, 2)); mv <- as.integer(substr(s, 3, 4))
        if (hv < 24 && mv < 60) { 
-         hh[i] <- hv; mi[i] <- mv; ss[i] <- 0L; yy[i] <- curr_y; mm[i] <- as.integer(lubridate::month(ref_date)); dd[i] <- as.integer(lubridate::day(ref_date)); next 
+         hh[i] <- hv; mi[i] <- mv; ss[i] <- 0L; yy[i] <- curr_y; mm[i] <- as.integer(format(ref_date, "%m")); dd[i] <- as.integer(format(ref_date, "%d")); next 
        }
     }
 
-    # Relative Key terms
+    # Relative
     if (s_low %in% c("today", "tomorrow", "yesterday", "noon", "midnight")) {
       stats$relative <- stats$relative + 1
-      if (s_low == "today") { yy[i] <- curr_y; mm[i] <- as.integer(lubridate::month(ref_date)); dd[i] <- as.integer(lubridate::day(ref_date)); next }
-      if (s_low == "tomorrow") { dr <- ref_date + 1; yy[i] <- as.integer(lubridate::year(dr)); mm[i] <- as.integer(lubridate::month(dr)); dd[i] <- as.integer(lubridate::day(dr)); next }
-      if (s_low == "yesterday") { dr <- ref_date - 1; yy[i] <- as.integer(lubridate::year(dr)); mm[i] <- as.integer(lubridate::month(dr)); dd[i] <- as.integer(lubridate::day(dr)); next }
-      if (s_low == "noon") { yy[i] <- curr_y; mm[i] <- as.integer(lubridate::month(ref_date)); dd[i] <- as.integer(lubridate::day(ref_date)); hh[i] <- 12; mi[i] <- 0; next }
-      if (s_low == "midnight") { yy[i] <- curr_y; mm[i] <- as.integer(lubridate::month(ref_date)); dd[i] <- as.integer(lubridate::day(ref_date)); hh[i] <- 0; mi[i] <- 0; next }
+      if (s_low == "today") { yy[i] <- curr_y; mm[i] <- as.integer(format(ref_date, "%m")); dd[i] <- as.integer(format(ref_date, "%d")); next }
+      if (s_low == "tomorrow") { dr <- ref_date + 1; yy[i] <- as.integer(format(dr, "%Y")); mm[i] <- as.integer(format(dr, "%m")); dd[i] <- as.integer(format(dr, "%d")); next }
+      if (s_low == "yesterday") { dr <- ref_date - 1; yy[i] <- as.integer(format(dr, "%Y")); mm[i] <- as.integer(format(dr, "%m")); dd[i] <- as.integer(format(dr, "%d")); next }
+      if (s_low == "noon") { yy[i] <- curr_y; mm[i] <- as.integer(format(ref_date, "%m")); dd[i] <- as.integer(format(ref_date, "%d")); hh[i] <- 12; mi[i] <- 0; next }
+      if (s_low == "midnight") { yy[i] <- curr_y; mm[i] <- as.integer(format(ref_date, "%m")); dd[i] <- as.integer(format(ref_date, "%d")); hh[i] <- 0; mi[i] <- 0; next }
     }
 
     # Contextual
@@ -99,7 +102,7 @@ parse_dt <- function(x, ref_date = Sys.Date(), verbose = TRUE) {
        next
     }
 
-    # Fallback Standard
+    # Fallback
     p <- parsedate::parse_date(gsub("\\.", "/", s))
     if (!is.na(p)) {
       m_idx <- NA_integer_
@@ -110,7 +113,7 @@ parse_dt <- function(x, ref_date = Sys.Date(), verbose = TRUE) {
       if (is.na(m_idx)) m_idx <- as.integer(lubridate::month(p))
       m_val <- m_idx; d_val <- as.integer(lubridate::day(p))
       
-      # Proximity-Based Year Imputation
+      # Proximity Year
       s_notime <- gsub("\\b\\d{1,2}:\\d{2}(:\\d{2})?(\\s*[ap]m)?\\b", " ", s, ignore.case = TRUE)
       y_str <- regmatches(s_notime, gregexpr("\\b(19|20)?\\d{2}\\b", s_notime))[[1]]
       if (length(y_str) > 0) {
@@ -118,18 +121,12 @@ parse_dt <- function(x, ref_date = Sys.Date(), verbose = TRUE) {
         if (y_val < 100) y_val <- ifelse(y_val > 50, 1900 + y_val, 2000 + y_val)
         yy[i] <- y_val
       } else {
-        # Intelligent Year Resolution (Closest to ref_date)
-        # Candidates: Last Year, This Year, Next Year
         cands <- c(curr_y - 1, curr_y, curr_y + 1)
-        # Try to make valid dates
-        dates <- lapply(cands, function(y) {
-           tryCatch(as.Date(paste(y, m_val, d_val, sep="-")), error = function(e) as.Date(NA))
-        })
+        dates <- lapply(cands, function(y) { tryCatch(as.Date(paste(y, m_val, d_val, sep="-")), error = function(e) as.Date(NA)) })
         diffs <- sapply(dates, function(d) if (is.na(d)) Inf else abs(as.numeric(difftime(d, ref_date, units="days"))))
         yy[i] <- cands[which.min(diffs)]
       }
       mm[i] <- m_val; dd[i] <- d_val
-      
       if (grepl("(?i)(\\d{1,2}(:\\d{2})?\\s*([ap]m))|(\\d{1,2}:\\d{2})|o'clock", s)) {
         hh[i] <- as.integer(lubridate::hour(p)); mi[i] <- as.integer(lubridate::minute(p)); ss[i] <- as.integer(lubridate::second(p))
       }
@@ -140,10 +137,9 @@ parse_dt <- function(x, ref_date = Sys.Date(), verbose = TRUE) {
        words <- c("one"=1, "two"=2, "three"=3, "four"=4, "five"=5, "six"=6, "seven"=7, "eight"=8, "nine"=9, "ten"=10)
        m <- regexec("(?i)(one|two|three|four|five|six|seven|eight|nine|ten|\\d+)\\s+(day|week|month|year)s?\\s+(ago|from\\s+now)", s)
        parts <- regmatches(s, m)[[1]]; n_v <- if (parts[2] %in% names(words)) words[parts[2]] else as.numeric(parts[2])
-       unit <- tolower(parts[3]); dir <- if (grepl("from", parts[4])) 1 else -1; dr <- ref_date
-       if (unit == "day") dr <- ref_date + (dir * n_v) else if (unit == "week") dr <- ref_date + (dir * n_v * 7)
-       else { lt <- as.POSIXlt(ref_date); if (unit == "month") lt$mon <- lt$mon + (dir * n_v) else lt$year <- lt$year + (dir * n_v); dr <- as.Date(lt) }
-       yy[i] <- as.integer(lubridate::year(dr)); mm[i] <- as.integer(lubridate::month(dr)); dd[i] <- as.integer(lubridate::day(dr)); stats$relative <- stats$relative + 1
+       unit <- tolower(parts[3]); dir <- if (grepl("from", parts[4])) 1 else -1; dr <- ref_date + (dir * (if(unit=="day") n_v else if(unit=="week") n_v*7 else 0))
+       if (unit %in% c("month", "year")) { lt <- as.POSIXlt(ref_date); if (unit == "month") lt$mon <- lt$mon + (dir * n_v) else lt$year <- lt$year + (dir * n_v); dr <- as.Date(lt) }
+       yy[i] <- as.integer(format(dr, "%Y")); mm[i] <- as.integer(format(dr, "%m")); dd[i] <- as.integer(format(dr, "%d")); stats$relative <- stats$relative + 1
     }
   }
   
