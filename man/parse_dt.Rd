@@ -4,10 +4,12 @@
 \alias{parse_dt}
 \title{Parse almost anything into a fuzzy datetime}
 \usage{
-parse_dt(x)
+parse_dt(x, ref_date = Sys.Date())
 }
 \arguments{
 \item{x}{A character vector}
+
+\item{ref_date}{A reference date for relative dates (e.g. "yesterday"). Defaults to current date.}
 }
 \value{
 A fuzzy_dt object

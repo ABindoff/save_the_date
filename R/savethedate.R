@@ -1,14 +1,27 @@
 
 #' Parse almost anything into a fuzzy datetime
 #' @param x A character vector
+#' @param ref_date A reference date for relative dates (e.g. "yesterday"). Defaults to current date.
 #' @return A fuzzy_dt object
 #' @export
-parse_dt <- function(x) {
+parse_dt <- function(x, ref_date = Sys.Date()) {
   x <- as.character(x)
   n <- length(x)
+  ref_date <- as.Date(ref_date)
   
   # Initial parse with parsedate
   parsed <- parsedate::parse_date(x)
+  
+  # Handle relative dates by shifting based on ref_date
+  # If ref_date is not today, we shift the 'parsed' results
+  # This works because parsedate uses Sys.time() as the anchor.
+  today <- as.Date(Sys.time())
+  if (ref_date != today) {
+    diff <- as.numeric(ref_date - today)
+    # Only shift if the string contains relative terms
+    is_relative <- grepl("(?i)yesterday|today|tomorrow|last|next|ago|hence|now", x)
+    parsed[is_relative] <- parsed[is_relative] + (diff * 86400)
+  }
   
   # Extraction with regex for verification
   # Year: 4 digits starting with 19 or 20
@@ -78,11 +91,11 @@ print.fuzzy_dt <- function(x, ...) {
 }
 
 #' @export
-as.POSIXct.fuzzy_dt <- function(x, tz = "UTC", ...) {
-  curr <- as.POSIXlt(Sys.time())
+as.POSIXct.fuzzy_dt <- function(x, tz = "UTC", ref_date = Sys.Date(), ...) {
+  curr <- as.POSIXlt(ref_date)
   yy <- ifelse(is.na(x$year), curr$year + 1900, x$year)
-  mm <- ifelse(is.na(x$month), 1, x$month)
-  dd <- ifelse(is.na(x$day), 1, x$day)
+  mm <- ifelse(is.na(x$month), curr$mon + 1, x$month)
+  dd <- ifelse(is.na(x$day), curr$mday, x$day)
   hh <- ifelse(is.na(x$hour), 0, x$hour)
   mi <- ifelse(is.na(x$minute), 0, x$minute)
   ss <- ifelse(is.na(x$second), 0, x$second)
